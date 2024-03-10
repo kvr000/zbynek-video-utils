@@ -20,10 +20,10 @@ options:
 ```
 
 
-### embed
+### subtitle-embed
 
 ```
-usage: zbynek-video-util embed [-h] [--prio language priorities, comma separated or multiple arguments]
+usage: zbynek-video-util subtitle-embed [-h] [--prio language priorities, comma separated or multiple arguments]
 
 Embed subtitles
 
@@ -37,10 +37,10 @@ The command adds subtitles from the-video.*.srt into the the-video file.
 #### Options
 
 
-### convert
+### subtitle-convert
 
 ```
-usage: zbynek-video-util convert [-h] [-i [INPUTS]] [-o [OUTPUT]] [-t TYPE] [--delay [DELAY]] inputs [inputs ...]
+usage: zbynek-video-util subtitle-convert [-h] [-i [INPUTS]] [-o [OUTPUT]] [-t TYPE] [--delay [DELAY]] inputs [inputs ...]
 
 Convert subtitles
 
@@ -52,6 +52,7 @@ options:
   -i [INPUTS], --input [INPUTS]
   -o [OUTPUT], --output [OUTPUT]
   -t TYPE, --type TYPE
+  --delay time:delay    delays subtitle at time by delay seconds (can be negative and specified twice to proportionally delay)              
 ```
 
 The command converts subtitles files across various formats (srt and sub are supported).
