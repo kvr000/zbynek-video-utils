@@ -5,13 +5,13 @@
 
 	<modelVersion>4.0.0</modelVersion>
 
-	<groupId>com.github.kvr000.videoutils</groupId>
+	<groupId>com.github.kvr000.zbynekvideoutils</groupId>
 	<artifactId>zbynek-video-utils</artifactId>
 	<packaging>pom</packaging>
 	<version>1.0.0</version>
 
 	<modules>
-		<module>zbynek-video-util</module>
+		<module>zbynek-video-tool</module>
 	</modules>
 
 	<properties>

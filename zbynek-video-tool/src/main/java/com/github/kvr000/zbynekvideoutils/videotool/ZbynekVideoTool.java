@@ -1,6 +1,24 @@
-package com.github.kvr000.videoutils.zbynekvideoutil;
+/*
+ * zbynek-video-tool - various video files manipulation utilities
+ *
+ * Copyright 2024-2024 Zbynek Vyskovsky mailto:kvr000@gmail.com http://github.com/kvr000/ https://github.com/zbynek-music-utils/ https://www.linkedin.com/in/zbynek-vyskovsky/
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-import com.github.kvr000.videoutils.zbynekvideoutil.command.MyCommand;
+package com.github.kvr000.zbynekvideoutils.videotool;
+
+import com.github.kvr000.zbynekvideoutils.videotool.command.MyCommand;
 import com.google.common.collect.ImmutableMap;
 import com.google.inject.AbstractModule;
 import com.google.inject.Guice;
@@ -27,11 +45,11 @@ import java.util.Map;
 
 
 /**
- * ZbynekVideoUtil entry point.  This class only executes subcommands.
+ * ZbynekVideoTool entry point.  This class only executes subcommands.
  */
 @RequiredArgsConstructor(onConstructor = @__(@Inject))
 @Log4j2
-public class ZbynekVideoUtil extends AbstractParentCommand
+public class ZbynekVideoTool extends AbstractParentCommand
 {
 	private Options options;
 
@@ -39,8 +57,8 @@ public class ZbynekVideoUtil extends AbstractParentCommand
 	{
 		runMain(args, (args0) -> {
 			AppContext appContext = new CommonAppContext(Guice.createInjector(new GuiceModule()).getInstance(BeanFactory.class));
-			return appContext.getBeanFactory().getBean(ZbynekVideoUtil.class).run(
-				new RootCommandContext(appContext).createChild(null, "zbynek-video-util", null),
+			return appContext.getBeanFactory().getBean(ZbynekVideoTool.class).run(
+				new RootCommandContext(appContext).createChild(null, "zbynek-video-tool", null),
 				Arrays.asList(args0)
 			);
 		});
@@ -73,7 +91,7 @@ public class ZbynekVideoUtil extends AbstractParentCommand
 	@Override
 	protected String configHelpTitle(CommandContext context)
 	{
-		return "zbynek-video-util - various video manipulation tools";
+		return "zbynek-video-tool - various video manipulation tools";
 	}
 
 	@Override

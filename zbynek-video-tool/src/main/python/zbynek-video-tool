@@ -5,8 +5,23 @@
 # - Convert subtitles between sub and srt formats
 # - Set default streams in video
 #
-# Author: Zbynek Vyskovsky, kvr000@gmail.com, https://github.com/kvr000/zbynek-util/ https://www.linkedin.com/in/zbynek-vyskovsky/
-# License: Apache License 2.0
+# zbynek-video-tool - various video files manipulation utilities
+#
+# Copyright 2024-2024 Zbynek Vyskovsky mailto:kvr000@gmail.com http://github.com/kvr000/ https://github.com/zbynek-music-utils/ https://www.linkedin.com/in/zbynek-vyskovsky/
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
 
 from __future__ import annotations
 from pydantic import BaseModel
@@ -22,6 +37,10 @@ import shutil
 import subprocess
 import argparse
 import json
+
+
+def format_shell(cmd: list[str]) -> str:
+    return " ".join(map(lambda x: '"' + re.sub(r'[$"]', r'\\\0', x) + '"', cmd))
 
 
 def silent_unlink(filename: str):
@@ -368,7 +387,7 @@ class SubtitleEmbedCommand(SubtitleSubCommand):
         parser.parse_args(args[1:], namespace=self)
 
         if self.main.video_input is None or self.main.video_output is None or self.main.video_input == self.main.video_output:
-            print("-i video_input and -o video_output must be both specified and must differ", file=sys.stderr)
+            print("--vi video_input and --vo video_output must be both specified and must differ", file=sys.stderr)
             return 122
 
         return None
@@ -386,7 +405,7 @@ class SubtitleEmbedCommand(SubtitleSubCommand):
 
         video = self.main.readVideoData()
 
-        args = ["ffmpeg", "-i", self.main.video_input, ]
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, ]
 
         maps = []
         meta = []
@@ -419,7 +438,9 @@ class SubtitleEmbedCommand(SubtitleSubCommand):
                 input_counter = input_counter + 1
                 subtitle_counter = subtitle_counter + 1
         args.extend(maps)
-        args.extend(["-c:v", "copy", "-c:a", "copy", "-c:d", "copy", "-c:s", "mov_text"])
+        args.extend(["-c", "copy"])
+        if Path(self.main.video_output).suffix == ".mp4":
+            args.extend(["-c:s", "mov_text"])
         args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
         args.extend(meta)
         args.append('--')
@@ -427,10 +448,10 @@ class SubtitleEmbedCommand(SubtitleSubCommand):
 
         safe = True
         try:
-            print(f"Executing ffmpeg: {args}", file=sys.stderr)
+            print(f"Executing ffmpeg: {format_shell(args)}", file=sys.stderr)
             exit: int = subprocess.run(args).returncode
             if exit != 0:
-                print(f"process exited with error: args={args} exit={exit}", file=sys.stderr)
+                print(f"process exited with error: exit={exit} : {format_shell(args)}", file=sys.stderr)
             #safe = False
             #shutil.copyfile(tmp, self.main.video_input)
             #safe = True
@@ -442,22 +463,22 @@ class SubtitleEmbedCommand(SubtitleSubCommand):
         return exit
 
 
-class DefaultsCommand(SubtitleSubCommand):
-    audio: str | None = None
-    subtitle: str | None = None
+class ConvertCommand(SubtitleSubCommand):
+    default_audio: str | None = None
+    default_subtitle: str | None = None
 
     def __init__(self, parent):
         self.main = parent
 
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Sets default streams")
-        parser.add_argument("--audio", type=str, dest="audio", metavar="default audio track language, empty for none")
-        parser.add_argument("--subtitle", type=str, dest="subtitle", metavar="default subtitle track language, empty for none")
+        parser.add_argument("--default-audio", type=str, dest="default_audio", metavar="default audio track language, empty for none")
+        parser.add_argument("--default-subtitle", type=str, dest="default_subtitle", metavar="default subtitle track language, empty for none")
 
         parser.parse_args(args[1:], namespace=self)
 
         if self.main.video_input is None or self.main.video_output is None or self.main.video_input == self.main.video_output:
-            print("-i video_input and -o video_output must be both specified and must differ", file=sys.stderr)
+            print("--vi video_input and --vo video_output must be both specified and must differ", file=sys.stderr)
             return 122
 
         return None
@@ -465,9 +486,9 @@ class DefaultsCommand(SubtitleSubCommand):
     def execute(self) -> int:
         video = self.main.readVideoData()
 
-        args = ["ffmpeg", "-i", self.main.video_input, "-map", "0" ]
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, "-map", "0" ]
 
-        if self.subtitle is not None:
+        if self.default_subtitle is not None:
             args.extend(["-default_mode", "infer_no_subs"])
 
         meta = []
@@ -478,16 +499,16 @@ class DefaultsCommand(SubtitleSubCommand):
         for stream in video["streams"]:
             if stream['codec_type'] == 'subtitle':
                 language = stream['tags']['language']
-                if self.subtitle is not None:
-                    if language == self.subtitle:
+                if self.default_subtitle is not None:
+                    if language == self.default_subtitle:
                         meta.extend([f"-disposition:s:{subtitle_counter}", 'default'])
                     else:
                         meta.extend([f"-disposition:s:{subtitle_counter}", '0'])
                 subtitle_counter = subtitle_counter + 1
             elif stream['codec_type'] == 'audio':
                 language = stream['tags']['language']
-                if self.audio is not None:
-                    if language == self.audio:
+                if self.default_audio is not None:
+                    if language == self.default_audio:
                         meta.extend([f"-disposition:a:{audio_counter}", 'default'])
                     else:
                         meta.extend([f"-disposition:a:{audio_counter}", '0'])
@@ -495,6 +516,8 @@ class DefaultsCommand(SubtitleSubCommand):
             stream_counter = stream_counter + 1
 
         args.extend(["-c", "copy"])
+        if Path(self.main.video_output).suffix != Path(self.main.video_input).suffix and Path(self.main.video_output).suffix == ".mp4":
+            args.extend(["-c:s", "mov_text"])
         args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
         args.extend(meta)
         args.append('--')
@@ -502,10 +525,10 @@ class DefaultsCommand(SubtitleSubCommand):
 
         safe = True
         try:
-            print(f"Executing ffmpeg: {args}", file=sys.stderr)
+            print(f"Executing ffmpeg: {format_shell(args)}", file=sys.stderr)
             exit: int = subprocess.run(args).returncode
             if exit != 0:
-                print(f"process exited with error: args={args} exit={exit}", file=sys.stderr)
+                print(f"process exited with error: exit={exit} : args={format_shell(args)}", file=sys.stderr)
             #safe = False
             #shutil.copyfile(tmp, self.main.video_input)
             #safe = True
@@ -539,12 +562,13 @@ class Main(Command):
             self.command = SubtitleEmbedCommand(self)
         elif self.subcommand[0] == 'subtitle-convert':
             self.command = SubtitleConvertCommand(self)
-        elif self.subcommand[0] == 'defaults':
-            self.command = DefaultsCommand(self)
+        elif self.subcommand[0] == 'convert':
+            self.command = ConvertCommand(self)
         else:
-            print("Supported subcommands: subtitle-embed subtitle-convert defaults", file=sys.stderr)
+            print("Supported subcommands: convert subtitle-embed subtitle-convert", file=sys.stderr)
             return 122
 
+        self.subcommand[0] = args[0] + " " + self.subcommand[0]
         return self.command.run(self.subcommand)
 
     def readVideoData(self) -> dict[str, object]:
@@ -553,10 +577,11 @@ class Main(Command):
         return data
 
 
-logging.basicConfig(
-    format='%(asctime)s %(levelname)-8s %(message)s',
-    level=logging.INFO,
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
+if __name__ == "__main__":
+    logging.basicConfig(
+        format='%(asctime)s %(levelname)-8s %(message)s',
+        level=logging.INFO,
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
 
-sys.exit(Main().run(sys.argv))
+    sys.exit(Main().run(sys.argv))

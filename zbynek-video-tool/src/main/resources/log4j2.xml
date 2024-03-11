@@ -6,7 +6,7 @@
 		</Console>
 	</Appenders>
 	<Loggers>
-		<Logger name="com.github.kvr000.videoutils.zbynekvideoutil" level="info" additivity="false">
+		<Logger name="com.github.kvr000.zbynekvideoutils.videotool" level="info" additivity="false">
 			<AppenderRef ref="LogToConsole"/>
 		</Logger>
 		<Root level="error">
