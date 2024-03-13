@@ -3,6 +3,12 @@
 Command line utility to manipulate video files.
 
 
+## Download
+
+- https://github.com/kvr000/zbynek-video-utils/releases/download/master/zbynek-video-tool
+- https://github.com/kvr000/zbynek-video-utils/releases/tag/master
+
+
 ## Usage
 
 ```
@@ -124,6 +130,8 @@ cd zbynek-video-utils/
 The code is released under version 2.0 of the [Apache License][].
 
 ## Stay in Touch
+
+Author: Zbynek Vyskovsky
 
 Feel free to contact me at kvr000@gmail.com  and http://github.com/kvr000/ and http://github.com/kvr000/zbynek-video-utils/
 
