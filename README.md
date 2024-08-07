@@ -49,6 +49,28 @@ Converts video stream, possibly changing default tracks.
 - `-default-subtitle language` : default subtitle track
 
 
+### concat
+
+```
+usage: /home/rat/bin/zbynek-video-tool concat [-h] inputs [inputs ...]
+
+Concatenates files
+
+positional arguments:
+  inputs
+
+options:
+  -h, --help  show this help message and exit
+```
+
+Concats video streams.
+
+#### Options
+
+- `-default-audio language` : default audio track
+- `-default-subtitle language` : default subtitle track
+
+
 ### subtitle-embed
 
 ```
