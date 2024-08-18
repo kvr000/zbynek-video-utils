@@ -26,6 +26,8 @@
 from __future__ import annotations
 
 import tempfile
+from functools import reduce
+from math import floor, ceil
 from typing import IO
 
 from pydantic import BaseModel
@@ -80,6 +82,45 @@ class TimeFormat:
             raise ValueError("Expected [-][[hh:]mm:]ss[.ssssss] for time format, got: " + time)
         return (-1 if match.group(1) == "-" else 1) * (int(match.group(2) or 0)*3600000000 + int(match.group(3) or 0)*60000000 + int(float(match.group(4))*1000000))
 
+    def us_time_to_str(time: int):
+        remaining = time
+        us = time % 1000000
+        remaining = int(remaining / 1000000)
+        seconds = remaining % 60
+        remaining = (remaining / 60)
+        minutes = remaining % 60
+        remaining = (remaining / 60)
+        hours = remaining
+        return "%02d:%02d:%02d.%06d" % (hours, minutes, seconds, us)
+
+
+class Ffmpeg:
+    def ffprobePipe(self, args: list[str]) -> subprocess.Popen:
+        full = [ "ffprobe" ]
+        full.extend(args)
+        print("Running: " + format_shell(full))
+        return subprocess.Popen(full, stdout=subprocess.PIPE, text=True)
+
+    def ffmpegPipe(self, args: list[str]) -> subprocess.Popen:
+        full = [ "ffmpeg" ]
+        full.extend(args)
+        print("Running: " + format_shell(full))
+        return subprocess.Popen(full, stdout=subprocess.PIPE, text=True)
+
+    def ffprobeCapture(self, args: list[str]) -> str:
+        proc = self.ffprobePipe(args)
+        output = proc.communicate()[0]
+        if proc.returncode != 0:
+            raise OSError(f"Failed to run ffprobe: exit={proc.returncode}")
+        return output
+
+    def ffmpegCapture(self, args: list[str]) -> str:
+        proc = self.ffmpegPipe(args)
+        output = proc.communicate()[0]
+        if proc.returncode != 0:
+            raise OSError(f"Failed to run ffmpeg: args={format_shell(args)} exit={proc.returncode}")
+        return output
+
 
 class VideoFrame(BaseModel):
     id: int
@@ -87,7 +128,11 @@ class VideoFrame(BaseModel):
 
 
 class VideoData:
+    ffmpeg: Ffmpeg = Ffmpeg()
+
     filename: str
+
+    cached_format_data: dict[str, object] = None
 
     cached_frames_list: list[VideoFrame] = None
     cached_frames_by_id: dict[int, VideoFrame] = None
@@ -95,6 +140,9 @@ class VideoData:
 
     def __init__(self, filename):
         self.filename = filename
+
+    def duration(self):
+        return int(round(float(self.format_data()["format"]["duration"]) * 1000000))
 
     def frames_by_time_us(self):
         if self.cached_frames_by_time_us is None:
@@ -158,6 +206,12 @@ class VideoData:
             if id % 10000 == 0:
                 logging.info("Obtaining video frames index, progress=%d hours=%.6f", id, frame.time_us / 3600000000)
 
+    def format_data(self) -> dict[str, object]:
+        if self.cached_format_data is None:
+            text = self.ffmpeg.ffprobeCapture(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", "--", self.filename])
+            self.cached_format_data = json.loads(text)
+        return self.cached_format_data
+
     @staticmethod
     def readFrames(fd: IO):
         for frame in readTextSegments(fd, "[/FRAME]\n"):
@@ -168,6 +222,32 @@ class VideoData:
                     data[split[0]] = split[1]
             yield data
         return
+
+
+class VideoManipulations:
+    ffmpeg: Ffmpeg = Ffmpeg()
+
+    def cutVideo(self, output: str, input: str, start_us: int, end_us: int | None):
+        args = ["-hide_banner", "-loglevel", "error", "-ss", TimeFormat.us_time_to_str(start_us)]
+        if end_us is not None:
+            args.extend(["-to", TimeFormat.us_time_to_str(end_us)])
+        args.extend(["-i", input, "-c", "copy", output])
+        self.ffmpeg.ffmpegCapture(args)
+
+    def concatVideos(self, output: str, inputs: list[str]):
+        listfile = tempfile.NamedTemporaryFile("w", delete_on_close=False)
+        try:
+            for input in inputs:
+                print("file " + os.path.abspath(input), file=listfile)
+            listfile.close()
+
+            args = ["-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", listfile.name, "-c", "copy", output]
+
+            #print(f"Executing ffmpeg: {format_shell(args)}", file=sys.stderr)
+            self.ffmpeg.ffmpegCapture(args)
+        finally:
+            listfile.close()
+            os.unlink(listfile.name)
 
 
 class SubtitleEntry(BaseModel):
@@ -594,8 +674,207 @@ class ConcatCommand(MainSubCommand):
             os.unlink(listfile.name)
 
 
+class FromPicturesCommand(MainSubCommand):
+    inputs: list[str] = list()
+
+    # ffmpeg -loop 1 -t 7 -i P_20240907_055750.jpg -loop 1 -t 5 -i P_20240907_055802.jpg -loop 1 -t 7 -i P_20240907_111803.jpg  -filter_complex "[0:v]fade=t=out:st=4:d=1,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,drawtext=text='Text one, with colons \: escaped':x=(w-text_w)/2:y=(h/50):fontsize=40:fontcolor=#2ffa29:shadowx=3:shadowy=3[v0]; \
+    #  [1:v]fade=t=in:st=0:d=1,fade=t=out:st=4:d=1,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,drawtext=text='Text 2':x=(w-text_w)/2:y=(h/50):fontsize=40:fontcolor=#2ffa29:shadowx=3:shadowy=3[v1]; \
+    #  [2:v]fade=t=in:st=0:d=1,fade=t=out:st=4:d=1,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,drawtext=text='Text 3':x=(w-text_w)/2:y=(h/50):fontsize=40:fontcolor=#2ffa29:shadowx=3:shadowy=3[v2]; \
+    #  [v0][v1][v2]concat=n=3:v=1:a=0,format=yuv420p[v];
+    #  " -map "[v]" photos.mp4
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.main = parent
+
+    def setup(self, args) -> int | None:
+        parser = argparse.ArgumentParser(prog=args[0], description="Concatenates files")
+        parser.add_argument("inputs", type=str, action='extend', nargs='+')
+
+        parser.parse_args(args[1:], namespace=self)
+
+        if self.main.video_output is None or self.main.video_output in self.inputs:
+            print("--vo video_output must be both specified and must differ from inputs", file=sys.stderr)
+            return 122
+        if self.main.video_input is not None:
+            print("--vi video_input must not be specified, pass pictures as regular arguments", file=sys.stderr)
+            return 122
+
+        return None
+
+    def execute(self) -> int:
+        # TODO
+        raise NotImplementedError("TODO: see example in the code to finish")
+
+
+class AddTextCommand(MainSubCommand):
+    class Input(BaseModel):
+        text: str | None = None
+        start_us: int | None = None
+        duration_us: int | None = None
+
+    class Cut(BaseModel):
+        start_us: int = None
+        end_us: int = None
+        inputs: list[AddTextCommand.Input] = list()
+
+    videoManipulations: VideoManipulations = VideoManipulations()
+
+    size: str = "40"
+    color: str = "#2ffa29"
+    shadow_offset: int = 2
+    duration_us: float = 15000000
+    fade_in_us: float = 1000000
+    fade_out_us: float = 1000000
+    x_pos: str = "(w-text_w)/2"
+    y_pos: str = "(h/50)"
+    inputs_str: list[str] = list()
+
+    inputs: list[Input] = list()
+
+    video: VideoData
+    length_us: int
+
+    # ffmpeg -loop 1 -t 7 -i P_20240907_055750.jpg -loop 1 -t 5 -i P_20240907_055802.jpg -loop 1 -t 7 -i P_20240907_111803.jpg  -filter_complex "[0:v]fade=t=out:st=4:d=1,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,drawtext=text='Text one, with colons \: escaped':x=(w-text_w)/2:y=(h/50):fontsize=40:fontcolor=#2ffa29:shadowx=3:shadowy=3[v0]; \
+    #  [1:v]fade=t=in:st=0:d=1,fade=t=out:st=4:d=1,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,drawtext=text='Text 2':x=(w-text_w)/2:y=(h/50):fontsize=40:fontcolor=#2ffa29:shadowx=3:shadowy=3[v1]; \
+    #  [2:v]fade=t=in:st=0:d=1,fade=t=out:st=4:d=1,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,drawtext=text='Text 3':x=(w-text_w)/2:y=(h/50):fontsize=40:fontcolor=#2ffa29:shadowx=3:shadowy=3[v2]; \
+    #  [v0][v1][v2]concat=n=3:v=1:a=0,format=yuv420p[v];
+    #  " -map "[v]" photos.mp4
+    # :enable='between(t,23,31)
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.main = parent
+
+    def setup(self, args) -> int | None:
+        parser = argparse.ArgumentParser(prog=args[0], description="Add text")
+        parser.add_argument("--size", type=str, dest="size")
+        parser.add_argument("--color", type=str, dest="color")
+        parser.add_argument("--shadow-offset", type=int, dest="shadow_offset")
+        parser.add_argument("--duration", type=TimeFormat.str_to_us_time, dest="duration_us")
+        parser.add_argument("--fade-in", type=TimeFormat.str_to_us_time, dest="fade_in_us",)
+        parser.add_argument("--fade-out", type=TimeFormat.str_to_us_time, dest="fade_out_us")
+        parser.add_argument("--x", type=str, dest="x_pos")
+        parser.add_argument("--y", type=str, dest="y_pos")
+        parser.add_argument("inputs_str", type=str, action='extend', nargs='+')
+
+        parser.parse_args(args[1:], namespace=self)
+
+        if self.main.video_output is None:
+            print("--vo video_output must be both specified and must differ from inputs", file=sys.stderr)
+            return 122
+        if self.main.video_input is None or self.main.video_input == self.main.video_output:
+            print("--vi video_input must be specified and must be different from video output", file=sys.stderr)
+            return 122
+
+        for input_str in self.inputs_str:
+            pending: str = input_str
+            input: AddTextCommand.Input = AddTextCommand.Input()
+            while True:
+                equal = pending.find('=')
+                if equal < 0:
+                    raise ValueError("Cannot find = in input specification while text not yet specified: " + pending)
+                key = pending[:equal]
+                if key == "text":
+                    input.text = pending[equal + 1:]
+                    break
+                colon = pending.index(':', equal)
+                if colon < 0:
+                    raise ValueError("Cannot find : in input specification: " + pending)
+                value = pending[equal + 1 : colon]
+                if key == "start":
+                    input.start_us = TimeFormat.str_to_us_time(value)
+                elif key == "duration":
+                    input.duration_us = int(float(value) * 1000000)
+                else:
+                    try:
+                        setattr(input, key, value)
+                    except BaseException as ex:
+                        raise KeyError("Invalid attribute for text, only start, duration and text are supported: " + key) from ex
+                pending = pending[colon + 1:]
+            if input.start_us is None:
+                raise KeyError("start attribute is mandatory: " + input_str)
+            if input.duration_us is None:
+                input.duration_us = self.duration_us
+            self.inputs.append(input)
+
+        return None
+
+    def execute(self) -> int:
+        self.video = VideoData(self.main.video_input)
+        self.length_us = self.video.duration()
+        print("Do the work: " + str(self.inputs))
+        with tempfile.TemporaryDirectory(suffix="-zbynek-video-util", delete=False) as tmp:
+            cuts = list[AddTextCommand.Cut]()
+
+            for input in self.inputs:
+                self.getCut(cuts, input.start_us, input.start_us + input.duration_us).inputs.append(input)
+            cuts.sort(key=lambda o: o.start_us)
+
+            parts = list[str]()
+            time_us: int = 0
+            for cut in cuts:
+                if time_us < cut.start_us:
+                    parts.append(self.cutVideo(tmp, len(parts), time_us, cut.start_us))
+                    time_us = cut.start_us
+                parts.append(self.cutVideoWithTexts(tmp, len(parts), time_us, cut.end_us, cut.inputs))
+                time_us = cut.end_us
+
+            if time_us < self.video.duration():
+                parts.append(self.cutVideo(tmp, len(cuts), time_us, self.video.duration()))
+
+            self.videoManipulations.concatVideos(self.main.video_output, parts)
+
+        return 0
+
+    def getCut(self, cuts: list[AddTextCommand.Cut], start_time_us: int, end_time_us: int) -> Cut:
+        if end_time_us > self.video.duration():
+            raise ValueError("end time beyond video length: " + TimeFormat.us_time_to_str(end_time_us))
+        affected = list()
+        newCut = AddTextCommand.Cut(
+            start_us=self.calculateFloorBoundary(start_time_us),
+            end_us=self.calculateCeilBoundary(end_time_us)
+        )
+        print("new: " + str(newCut))
+        print("old: " + str(cuts))
+        for cut in [newCut] + cuts:
+            if cut.end_us >= start_time_us and cut.start_us <= end_time_us:
+                affected.append(cut)
+        print("aff: " + str(affected))
+        if len(affected) == 1:
+            cuts.append(newCut)
+            return newCut
+        else:
+            for cut in affected:
+                cuts.remove(cut)
+            cut = AddTextCommand.Cut(
+                start_us=reduce(min, map(lambda c: c.start_us, affected)),
+                end_us=reduce(max, map(lambda c: c.end_us, affected)),
+                inputs=reduce(lambda x, y: x + y, map(lambda c: c.inputs, affected))
+            )
+            cuts.append(cut)
+            return cut
+
+    def calculateFloorBoundary(self, time_us: int):
+        return int(floor(time_us / 600000000)) * 600000000
+
+    def calculateCeilBoundary(self, time_us: int):
+        return min(int(ceil(time_us / 600000000.0)) * 600000000, self.length_us)
+
+    def cutVideo(self, tmp: str, index: int, start_us: int, end_us: int) -> str:
+        print(f"cutting: {start_us} {end_us}")
+        output = tmp + "/" + ("%04d.mp4" % (index))
+        self.videoManipulations.cutVideo(output, self.main.video_input, start_us, end_us)
+        return output
+
+    def cutVideoWithTexts(self, tmp: str, index: int, start_us: int, end_us: int, inputs: list[AddTextCommand.Input]) -> str:
+        output = tmp + "/" + ("%04d.mp4" % (index))
+        self.videoManipulations.cutVideo(output, self.main.video_input, start_us, end_us)
+        return output
+
+
 class Main(Command):
-    command: str | None = None
+    command: Command | None = None
     video_input: str | None = None
     video_output: str | None = None
     subcommand: list[str] = []
@@ -620,8 +899,10 @@ class Main(Command):
             self.command = ConvertCommand(self)
         elif self.subcommand[0] == 'concat':
             self.command = ConcatCommand(self)
+        elif self.subcommand[0] == 'add-text':
+            self.command = AddTextCommand(self)
         else:
-            print("Supported subcommands: convert concat subtitle-embed subtitle-convert", file=sys.stderr)
+            print("Supported subcommands: convert concat subtitle-embed subtitle-convert add-text", file=sys.stderr)
             return 122
 
         self.subcommand[0] = args[0] + " " + self.subcommand[0]
