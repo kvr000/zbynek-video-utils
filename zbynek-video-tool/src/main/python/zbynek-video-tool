@@ -72,12 +72,14 @@ def readTextSegments(fd: IO, footer):
 
 TIME_FORMAT_PATTERN = re.compile('^([-+])?(?:(\\d+):)?(?:(\\d+):)?(\\d+(?:\\.\\d*)?)$')
 
+
 class TimeFormat:
     @staticmethod
     def str_to_us_time(time: str):
         if (match := TIME_FORMAT_PATTERN.match(time)) is None:
             raise ValueError("Expected [-][[hh:]mm:]ss[.ssssss] for time format, got: " + time)
         return (-1 if match.group(1) == "-" else 1) * (int(match.group(2) or 0)*3600000000 + int(match.group(3) or 0)*60000000 + int(float(match.group(4))*1000000))
+
 
 class VideoFrame(BaseModel):
     id: int
@@ -142,7 +144,7 @@ class VideoData:
 
     def build_frames_index(self):
         logging.info("Obtaining video frames index, it may take few minutes")
-        proc = subprocess.Popen(["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-threads", str(os.cpu_count()), "-select_streams", "v:0", "-show_frames", self.filename], stdout=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-threads", "auto", "-select_streams", "v:0", "-show_frames", self.filename], stdout=subprocess.PIPE, text=True)
         id = 0
         self.cached_frames_list = list()
         self.cached_frames_by_id = dict()
@@ -178,6 +180,7 @@ class SubtitleEntry(BaseModel):
 SUB_LINE_PATTERN = re.compile('^\\{(\\d+)\\}\\{(\\d+)\\}(.*)')
 DIGITS_PATTERN = re.compile('^\\d+$')
 SRT_TIME_RANGE_PATTERN = re.compile('^(\\d+):(\\d+):(\\d+)[,.](\\d+) --> (\\d+):(\\d+):(\\d+)[,.](\\d+)$')
+
 
 class Subtitles:
     filename: str
@@ -296,17 +299,24 @@ class SubtitleConvertCommand(MainSubCommand):
             print("one of -o output or -t type arguments is mandatory", file=sys.stderr)
             return 122
 
-        if self.type is None:
-            extension = Path(self.output).suffix
-            if extension == "sub":
-                self.type = "sub"
-            elif extension == "srt":
-                self.type = "srt"
-        elif len(self.output) == 0:
+        if len(self.output) == 0:
+            if self.type is None:
+                print("-t type must be specified if there are multiple inputs", file=sys.stderr)
+                return 122
             self.output = map(lambda input: Path(input).stem + "." + self.type, self.inputs)
         elif len(self.inputs) > 1:
             print("-o output must not be specified if there are multiple inputs", file=sys.stderr)
             return 122
+        else:
+            if self.type is None:
+                extension = Path(self.output[0]).suffix
+                if extension == ".sub":
+                    self.type = "sub"
+                elif extension == ".srt":
+                    self.type = "srt"
+                else:
+                    print("Unrecognized extension for subtitles: " + extension, file=sys.stderr)
+                    return 122
 
         if len(self.delay) > 0:
             if len(self.delay) > 2:
@@ -570,7 +580,7 @@ class ConcatCommand(MainSubCommand):
             for input in self.inputs:
                 print("file " + os.path.abspath(input), file = listfile)
             listfile.close()
-            subprocess.run(["cat", listfile.name]).returncode
+            #subprocess.run(["cat", listfile.name]).returncode
 
             args = ["ffmpeg", "-f", "concat", "-safe", "0", "-i", listfile.name, "-c", "copy", self.main.video_output ]
 
@@ -581,7 +591,7 @@ class ConcatCommand(MainSubCommand):
             return exit
         finally:
             listfile.close()
-            #os.unlink(listfile.name)
+            os.unlink(listfile.name)
 
 
 class Main(Command):
