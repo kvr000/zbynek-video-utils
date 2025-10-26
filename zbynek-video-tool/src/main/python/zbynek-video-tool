@@ -28,7 +28,7 @@ from __future__ import annotations
 import tempfile
 from functools import reduce
 from math import floor, ceil
-from typing import IO
+from typing import IO, override
 
 from pydantic import BaseModel
 import logging
@@ -353,6 +353,7 @@ class MainSubCommand(Command):
 class SubtitleConvertCommand(MainSubCommand):
     inputs: list[str] = list()
     output: list[str] = list()
+    type: str | None
     delay: list[str] = list()
 
     delay_start_at: int | None = None
@@ -383,7 +384,7 @@ class SubtitleConvertCommand(MainSubCommand):
             if self.type is None:
                 print("-t type must be specified if there are multiple inputs", file=sys.stderr)
                 return 122
-            self.output = map(lambda input: Path(input).stem + "." + self.type, self.inputs)
+            self.output = list(map(lambda input: Path(input).stem + "." + self.type, self.inputs))
         elif len(self.inputs) > 1:
             print("-o output must not be specified if there are multiple inputs", file=sys.stderr)
             return 122
@@ -470,7 +471,7 @@ class SubtitleEmbedCommand(MainSubCommand):
     priorities: list[str] | None = list()
 
     def __init__(self, parent):
-        self.main = parent
+        super().__init__(parent)
 
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Embed subtitles")
@@ -508,7 +509,7 @@ class SubtitleEmbedCommand(MainSubCommand):
             if stream['codec_type'] == 'subtitle':
                 language = stream['tags']['language']
                 if mapping.get(stream['tags']['language']) is not None:
-                    print(f"Replacing: language={language} file={file}", file=sys.stderr)
+                    print(f"Replacing: language={language} file={mapping.get(stream['tags']['language'])}", file=sys.stderr)
                     args.extend(["-i", mapping.get(stream['tags']['language'])])
                     maps.extend(["-map", str(input_counter) + ":s"])
                     meta.extend([f"-metadata:s:s:{subtitle_counter}", f"language={language}"])
@@ -555,13 +556,96 @@ class SubtitleEmbedCommand(MainSubCommand):
         return exit
 
 
+class LanguageReorderCommand(MainSubCommand):
+    priorities: list[str] | None = list()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+    def setup(self, args) -> int | None:
+        parser = argparse.ArgumentParser(prog=args[0], description="Language Reorder")
+        parser.add_argument("--prio", type=comma_separated_string, dest="priorities", metavar="language priorities, comma separated or multiple arguments, 'none' in the list means ignore any unspecified", action='extend')
+
+        parser.parse_args(args[1:], namespace=self)
+
+        if self.main.video_input is None or self.main.video_output is None or self.main.video_input == self.main.video_output:
+            print("--vi video_input and --vo video_output must be both specified and must differ", file=sys.stderr)
+            return 122
+
+        return None
+
+    def execute(self) -> int:
+        video = self.main.readVideoData()
+
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, ]
+
+        maps = []
+        meta = []
+
+        subtitles = []
+        audios = []
+
+        base = 0
+
+        for stream in video["streams"]:
+            if stream['codec_type'] == 'audio':
+                audios.append(stream)
+            elif stream['codec_type'] == 'subtitle':
+                subtitles.append(stream)
+            else:
+                maps.extend(["-map", "0:" + str(stream['index'])])
+                if stream['codec_type'] == 'video':
+                    base = len(maps)
+
+        prios = {}
+        for (i, lang) in enumerate(self.priorities):
+            prios[lang] = i
+
+        if 'none' in prios:
+            subtitles = list(filter(lambda e: e['tags']['language'] in prios, subtitles))
+            audios = list(filter(lambda e: e['tags']['language'] in prios, audios))
+        audios.sort(key=lambda e: prios[e['tags']['language']])
+        subtitles.sort(key=lambda e: prios[e['tags']['language']])
+
+        if subtitles:
+            maps[base:base] = ["-disposition:s:0", "default"]
+        for subtitle in reversed(subtitles):
+            maps[base:base] = ["-map", "0:" + str(subtitle['index'])]
+        if audios:
+            maps[base:base] = ["-disposition:a:0", "default"]
+        for audio in reversed(audios):
+            maps[base:base] = ["-map", "0:" + str(audio['index'])]
+        args.extend(maps)
+        args.extend(["-c", "copy"])
+        if Path(self.main.video_output).suffix == ".mp4":
+            args.extend(["-c:s", "mov_text"])
+        args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
+        args.extend(meta)
+        args.append('--')
+        args.append(self.main.video_output)
+
+        safe = True
+        try:
+            print(f"Executing ffmpeg: {format_shell(args)}", file=sys.stderr)
+            ret: int = subprocess.run(args).returncode
+            if ret != 0:
+                print(f"process exited with error: exit={ret} : {format_shell(args)}", file=sys.stderr)
+            #safe = False
+            #shutil.copyfile(tmp, self.main.video_input)
+            #safe = True
+        finally:
+            if safe:
+                #silent_unlink(tmp)
+                pass
+
+        return ret
+
+
 class ConvertCommand(MainSubCommand):
     default_audio: str | None = None
     default_subtitle: str | None = None
 
-    def __init__(self, parent):
-        self.main = parent
-
+    @override
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Sets default streams")
         parser.add_argument("--default-audio", type=str, dest="default_audio", metavar="default audio track language, empty for none")
@@ -575,6 +659,7 @@ class ConvertCommand(MainSubCommand):
 
         return None
 
+    @override
     def execute(self) -> int:
         video = self.main.readVideoData()
 
@@ -635,10 +720,7 @@ class ConvertCommand(MainSubCommand):
 class ConcatCommand(MainSubCommand):
     inputs: list[str] = list()
 
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.main = parent
-
+    @override
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Concatenates files")
         parser.add_argument("inputs", type=str, action='extend', nargs='+')
@@ -654,6 +736,7 @@ class ConcatCommand(MainSubCommand):
 
         return None
 
+    @override
     def execute(self) -> int:
         listfile = tempfile.NamedTemporaryFile("w", delete_on_close=False)
         try:
@@ -683,10 +766,7 @@ class FromPicturesCommand(MainSubCommand):
     #  [v0][v1][v2]concat=n=3:v=1:a=0,format=yuv420p[v];
     #  " -map "[v]" photos.mp4
 
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.main = parent
-
+    @override
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Concatenates files")
         parser.add_argument("inputs", type=str, action='extend', nargs='+')
@@ -702,6 +782,7 @@ class FromPicturesCommand(MainSubCommand):
 
         return None
 
+    @override
     def execute(self) -> int:
         # TODO
         raise NotImplementedError("TODO: see example in the code to finish")
@@ -710,8 +791,8 @@ class FromPicturesCommand(MainSubCommand):
 class AddTextCommand(MainSubCommand):
     class Input(BaseModel):
         text: str | None = None
-        start_us: int | None = None
-        duration_us: int | None = None
+        start_us: float | None = None
+        duration_us: float | None = None
 
     class Cut(BaseModel):
         start_us: int = None
@@ -742,10 +823,7 @@ class AddTextCommand(MainSubCommand):
     #  " -map "[v]" photos.mp4
     # :enable='between(t,23,31)
 
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.main = parent
-
+    @override
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Add text")
         parser.add_argument("--size", type=str, dest="size")
@@ -800,6 +878,7 @@ class AddTextCommand(MainSubCommand):
 
         return None
 
+    @override
     def execute(self) -> int:
         self.video = VideoData(self.main.video_input)
         self.length_us = self.video.duration()
@@ -879,6 +958,7 @@ class Main(Command):
     video_output: str | None = None
     subcommand: list[str] = []
 
+    @override
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Subtitles operations")
         parser.add_argument("--vi", "--video-input", type=str, dest="video_input")
@@ -899,10 +979,12 @@ class Main(Command):
             self.command = ConvertCommand(self)
         elif self.subcommand[0] == 'concat':
             self.command = ConcatCommand(self)
+        elif self.subcommand[0] == 'language-reorder':
+            self.command = LanguageReorderCommand(self)
         elif self.subcommand[0] == 'add-text':
             self.command = AddTextCommand(self)
         else:
-            print("Supported subcommands: convert concat subtitle-embed subtitle-convert add-text", file=sys.stderr)
+            print("Supported subcommands: convert concat subtitle-embed subtitle-convert language-reorder add-text", file=sys.stderr)
             return 122
 
         self.subcommand[0] = args[0] + " " + self.subcommand[0]
