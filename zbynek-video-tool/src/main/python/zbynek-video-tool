@@ -350,6 +350,25 @@ class MainSubCommand(Command):
         self.main = parent
 
 
+class FfmpegMainSubCommand(MainSubCommand):
+    def runFfmpegOutput(self, args: list[str]) -> int:
+        safe = True
+        args.extend(["--", self.main.video_output])
+        try:
+            print(f"Executing ffmpeg: {format_shell(args)}", file=sys.stderr)
+            ret: int = subprocess.run(args).returncode
+            if ret != 0:
+                print(f"process exited with error: exit={ret} : {format_shell(args)}", file=sys.stderr)
+            #safe = False
+            #shutil.copyfile(tmp, self.main.video_input)
+            #safe = True
+            return ret
+        finally:
+            if safe:
+                #silent_unlink(tmp)
+                pass
+
+
 class SubtitleConvertCommand(MainSubCommand):
     inputs: list[str] = list()
     output: list[str] = list()
@@ -493,7 +512,7 @@ class SubtitleEmbedCommand(MainSubCommand):
             mapping[Path(file).stem.removeprefix(prefix)] = file
 
         if len(mapping) == 0:
-            print("None subtitles found matching the pattern: pattern={pattern}", file=sys.stderr)
+            print(f"None subtitles found matching the pattern: pattern={pattern}", file=sys.stderr)
             return 122
 
         video = self.main.readVideoData()
@@ -602,19 +621,27 @@ class LanguageReorderCommand(MainSubCommand):
             prios[lang] = i
 
         if 'none' in prios:
-            subtitles = list(filter(lambda e: e['tags']['language'] in prios, subtitles))
-            audios = list(filter(lambda e: e['tags']['language'] in prios, audios))
-        audios.sort(key=lambda e: prios[e['tags']['language']])
-        subtitles.sort(key=lambda e: prios[e['tags']['language']])
+            subtitles = list(filter(lambda e: e['tags'].get('language', 'und') in prios, subtitles))
+            audios = list(filter(lambda e: e['tags'].get('language', 'und') in prios, audios))
+        audios.sort(key=lambda e: prios.get(e['tags'].get("language", "und"), sys.maxsize))
+        subtitles.sort(key=lambda e: prios.get(e['tags'].get('language', 'und'), sys.maxsize))
 
-        if subtitles:
-            maps[base:base] = ["-disposition:s:0", "default"]
-        for subtitle in reversed(subtitles):
-            maps[base:base] = ["-map", "0:" + str(subtitle['index'])]
+        more_maps = []
+        for i, audio in enumerate(audios):
+            more_maps.extend(["-map", "0:" + str(audio['index'])])
+            for tag in ['title']:
+                if tag in audio['tags']:
+                    meta.extend([f"-metadata:s:a:{i}", f"{tag}={audio['tags'][tag]}"])
         if audios:
-            maps[base:base] = ["-disposition:a:0", "default"]
-        for audio in reversed(audios):
-            maps[base:base] = ["-map", "0:" + str(audio['index'])]
+            more_maps.extend(["-disposition:a:0", "default"])
+        for i, subtitle in enumerate(subtitles):
+            more_maps.extend(["-map", "0:" + str(subtitle['index'])])
+            for tag in ['title']:
+                if tag in subtitle['tags']:
+                    meta.extend([f"-metadata:s:s:{i}", f"{tag}={subtitle['tags'][tag]}"])
+        if subtitles:
+            more_maps.extend(["-disposition:s:0", "default"])
+        maps[base:base] = more_maps
         args.extend(maps)
         args.extend(["-c", "copy"])
         if Path(self.main.video_output).suffix == ".mp4":
@@ -640,6 +667,38 @@ class LanguageReorderCommand(MainSubCommand):
 
         return ret
 
+
+class RetagUndCommand(FfmpegMainSubCommand):
+    tag: str
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+    def setup(self, args) -> int | None:
+        parser = argparse.ArgumentParser(prog=args[0], description="Retag unknown")
+        parser.add_argument("--tag", type=str, dest="tag", metavar="tag for und language")
+
+        parser.parse_args(args[1:], namespace=self)
+
+        if self.main.video_input is None or self.main.video_output is None or self.main.video_input == self.main.video_output:
+            print("--vi video_input and --vo video_output must be both specified and must differ", file=sys.stderr)
+            return 122
+
+        return None
+
+    def execute(self) -> int:
+        video = self.main.readVideoData()
+
+        args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, ]
+
+        args.extend(["-c", "copy"])
+        args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
+
+        for stream in video["streams"]:
+            if stream['codec_type'] in ('audio', 'subtitle') and stream['tags']['language'] == 'und':
+                args.extend(["-metadata:s:" + str(stream['index']), "language=" + self.tag])
+
+        return self.runFfmpegOutput(args)
 
 class ConvertCommand(MainSubCommand):
     default_audio: str | None = None
@@ -981,6 +1040,8 @@ class Main(Command):
             self.command = ConcatCommand(self)
         elif self.subcommand[0] == 'language-reorder':
             self.command = LanguageReorderCommand(self)
+        elif self.subcommand[0] == 'retag-und':
+            self.command = RetagUndCommand(self)
         elif self.subcommand[0] == 'add-text':
             self.command = AddTextCommand(self)
         else:
