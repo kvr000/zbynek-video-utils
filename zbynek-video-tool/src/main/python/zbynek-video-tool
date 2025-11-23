@@ -1052,8 +1052,12 @@ class Main(Command):
         return self.command.run(self.subcommand)
 
     def readVideoData(self) -> dict[str, object]:
-        proc = subprocess.Popen(["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-show_format", "-show_streams", "-show_programs", "-show_chapters", "-show_private_data", "-print_format", "json", "--", self.video_input], stdout=subprocess.PIPE, text=True)
+        cmd = ["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-show_format", "-show_streams", "-show_programs", "-show_chapters", "-show_private_data", "-print_format", "json", "--", self.video_input]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
         data = json.load(proc.stdout)
+        ret = proc.wait()
+        if ret != 0:
+            raise ValueError("Command failed: ret=" + str(ret) + " : " + format_shell(cmd) + "\n" + json.dumps(data))
         return data
 
 
