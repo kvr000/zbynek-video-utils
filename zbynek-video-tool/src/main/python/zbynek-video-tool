@@ -676,7 +676,7 @@ class RetagUndCommand(FfmpegMainSubCommand):
 
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Retag unknown")
-        parser.add_argument("--tag", type=str, dest="tag", metavar="tag for und language")
+        parser.add_argument("--tag", type=str, required=True, dest="tag", metavar="tag for und language")
 
         parser.parse_args(args[1:], namespace=self)
 
@@ -691,7 +691,7 @@ class RetagUndCommand(FfmpegMainSubCommand):
 
         args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, ]
 
-        args.extend(["-c", "copy"])
+        args.extend(["-map", "0", "-c", "copy"])
         args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
 
         for stream in video["streams"]:
@@ -1045,15 +1045,19 @@ class Main(Command):
         elif self.subcommand[0] == 'add-text':
             self.command = AddTextCommand(self)
         else:
-            print("Supported subcommands: convert concat subtitle-embed subtitle-convert language-reorder add-text", file=sys.stderr)
+            print("Supported subcommands: convert concat subtitle-embed subtitle-convert language-reorder add-text retag-und", file=sys.stderr)
             return 122
 
         self.subcommand[0] = args[0] + " " + self.subcommand[0]
         return self.command.run(self.subcommand)
 
     def readVideoData(self) -> dict[str, object]:
-        proc = subprocess.Popen(["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-show_format", "-show_streams", "-show_programs", "-show_chapters", "-show_private_data", "-print_format", "json", "--", self.video_input], stdout=subprocess.PIPE, text=True)
+        cmd = ["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-show_format", "-show_streams", "-show_programs", "-show_chapters", "-show_private_data", "-print_format", "json", "--", self.video_input]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
         data = json.load(proc.stdout)
+        ret = proc.wait()
+        if ret != 0:
+            raise ValueError("Command failed: ret=" + str(ret) + " : " + format_shell(cmd) + "\n" + json.dumps(data))
         return data
 
 
