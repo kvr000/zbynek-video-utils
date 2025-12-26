@@ -192,6 +192,8 @@ class VideoData:
 
     def build_frames_index(self):
         logging.info("Obtaining video frames index, it may take few minutes")
+        if self.filename is None:
+            raise IOError("Video filename must be specified")
         proc = subprocess.Popen(["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-threads", "auto", "-select_streams", "v:0", "-show_frames", self.filename], stdout=subprocess.PIPE, text=True)
         id = 0
         self.cached_frames_list = list()
@@ -208,6 +210,8 @@ class VideoData:
 
     def format_data(self) -> dict[str, object]:
         if self.cached_format_data is None:
+            if self.filename is None:
+                raise IOError("Video filename must be specified")
             text = self.ffmpeg.ffprobeCapture(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", "--", self.filename])
             self.cached_format_data = json.loads(text)
         return self.cached_format_data
@@ -303,6 +307,8 @@ class Subtitles:
             entries = []
             for frame in readTextSegments(fd, "\n"):
                 lines = frame.split("\n")
+                if all(t == "" for t in lines):
+                    continue
                 if DIGITS_PATTERN.match(lines[0]) is None:
                     raise ValueError("Expected number on the first line of srt frame, got: " + lines[0])
                 if (srt_time := SRT_TIME_RANGE_PATTERN.match(lines[1])) is None:
@@ -461,6 +467,7 @@ class SubtitleConvertCommand(MainSubCommand):
                 counter = counter + 1
                 start_time = self.adjustTime(self.video_data.time_by_range_type(entry.range_type, entry.start))
                 end_time = self.adjustTime(self.video_data.time_by_range_type(entry.range_type, entry.end))
+                #print(f"Converted time: orig={self.video_data.time_by_range_type(entry.range_type, entry.start)/1000000} new={start_time/1000000}")
                 print("%d\n%s --> %s\n%s" % (
                     counter,
                     Subtitles.us_to_srt_time(start_time), Subtitles.us_to_srt_time(end_time),
