@@ -33,6 +33,7 @@ from typing import IO, override
 from pydantic import BaseModel
 import logging
 import re
+import io
 import os
 import errno
 import sys
@@ -70,6 +71,36 @@ def readTextSegments(fd: IO, footer):
             pending = ""
             yield ret
     return
+
+
+class DelayedToCloseTextWriter(io.TextIOBase):
+    path: str
+    open_kwargs: dict[str, object]
+    fh: io.TextIO | None
+    content: str = ""
+
+    def __init__(self, path, **open_kwargs):
+        self.path = path
+        self.open_kwargs = open_kwargs
+        self.fh = None
+
+    def _ensure_open(self):
+        if self.fh is None:
+            self.fh = open(self.path, "wt", **self.open_kwargs)
+
+    def write(self, s):
+        self._ensure_open()
+        self.content += s
+
+    def flush(self):
+        pass
+
+    def close(self):
+        if self.content is not None:
+            self._ensure_open()
+            self.fh.write(self.content)
+            self.fh.close()
+            self.content = None
 
 
 TIME_FORMAT_PATTERN = re.compile('^([-+])?(?:(\\d+):)?(?:(\\d+):)?(\\d+(?:\\.\\d*)?)$')
@@ -461,7 +492,7 @@ class SubtitleConvertCommand(MainSubCommand):
         return [ TimeFormat.str_to_us_time(split[0]), TimeFormat.str_to_us_time(split[1]) ]
 
     def writeToSrt(self, subtitles, input, output) -> None:
-        with open(output, "wt") as fd:
+        with DelayedToCloseTextWriter(output) as fd:
             counter = 0
             for entry in subtitles.entries:
                 counter = counter + 1
@@ -475,7 +506,7 @@ class SubtitleConvertCommand(MainSubCommand):
                 ), file=fd)
 
     def writeToSub(self, subtitles, input, output) -> None:
-        with open(output, "wt") as fd:
+        with DelayedToCloseTextWriter(output) as fd:
             counter = 0
             for entry in subtitles.entries:
                 counter = counter + 1
@@ -534,7 +565,7 @@ class SubtitleEmbedCommand(MainSubCommand):
         for stream in video["streams"]:
             if stream['codec_type'] == 'subtitle':
                 language = stream['tags']['language']
-                if mapping.get(stream['tags']['language']) is not None:
+                if mapping.get(language) is not None:
                     print(f"Replacing: language={language} file={mapping.get(stream['tags']['language'])}", file=sys.stderr)
                     args.extend(["-i", mapping.get(stream['tags']['language'])])
                     maps.extend(["-map", str(input_counter) + ":s"])
@@ -1052,7 +1083,7 @@ class Main(Command):
         elif self.subcommand[0] == 'add-text':
             self.command = AddTextCommand(self)
         else:
-            print("Supported subcommands: convert concat subtitle-embed subtitle-convert language-reorder add-text retag-und", file=sys.stderr)
+            print("Supported subcommands: convert concat subtitle-embed subtitle-convert language-reorder add-text retag-und\ngot: " + self.subcommand[0], file=sys.stderr)
             return 122
 
         self.subcommand[0] = args[0] + " " + self.subcommand[0]
