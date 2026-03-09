@@ -70,6 +70,8 @@ def readTextSegments(fd: IO, footer):
             ret = pending
             pending = ""
             yield ret
+    if pending != "":
+        yield pending
     return
 
 
@@ -591,6 +593,8 @@ class SubtitleEmbedCommand(MainSubCommand):
         args.extend(["-c", "copy"])
         if Path(self.main.video_output).suffix == ".mp4":
             args.extend(["-c:s", "mov_text"])
+        elif Path(self.main.video_output).suffix == ".mkv":
+            args.extend(["-c:s", "srt"])
         args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
         args.extend(meta)
         args.append('--')
@@ -1107,3 +1111,6 @@ if __name__ == "__main__":
     )
 
     sys.exit(Main().run(sys.argv))
+
+
+# vim: set sw=4 et:
