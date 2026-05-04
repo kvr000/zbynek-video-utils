@@ -528,6 +528,7 @@ class SubtitleConvertCommand(MainSubCommand):
 
 class SubtitleEmbedCommand(MainSubCommand):
     priorities: list[str] | None = list()
+    no_checks: bool = False
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -535,6 +536,7 @@ class SubtitleEmbedCommand(MainSubCommand):
     def setup(self, args) -> int | None:
         parser = argparse.ArgumentParser(prog=args[0], description="Embed subtitles")
         parser.add_argument("--prio", type=comma_separated_string, dest="priorities", metavar="language priorities, comma separated or multiple arguments", action='extend')
+        parser.add_argument("--no-checks", action="store_true", dest="no_checks")
 
         parser.parse_args(args[1:], namespace=self)
 
@@ -543,6 +545,32 @@ class SubtitleEmbedCommand(MainSubCommand):
             return 122
 
         return None
+
+    def normalizeSrtFile(self, file: str) -> str:
+        subs = Subtitles.read_subtitles(file)
+
+        tmp = tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", newline="\n", suffix=".srt")
+        with tmp as fd:
+            for i, e in enumerate(subs.entries, 1):
+                fd.write(f"{i}\n")
+                fd.write(f"{Subtitles.us_to_srt_time(e.start)} --> {Subtitles.us_to_srt_time(e.end)}\n")
+                for line in e.text:
+                    fd.write(line.rstrip("\r\n") + "\n")
+                fd.write("\n")
+
+        return tmp.name
+
+    def verifySubtitleFile(self, file: str):
+        subs = Subtitles.read_subtitles(file)
+
+        prev_end = None
+        for i, e in enumerate(subs.entries, 1):
+            if prev_end is not None and e.start < prev_end:
+                raise ValueError(
+                    f"Overlapping subtitles in {file} at entry {i}: "
+                    f"start={e.start} < prev_end={prev_end}"
+                )
+            prev_end = e.end
 
     def execute(self) -> int:
         prefix = Path(self.main.video_input).stem + "."
@@ -557,19 +585,30 @@ class SubtitleEmbedCommand(MainSubCommand):
 
         video = self.main.readVideoData()
 
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, ]
+        args = self.main.createFfmpegCommand()
+        args.extend(["-i", self.main.video_input ])
 
         maps = []
         meta = []
         input_counter = 1
         subtitle_counter = 0
 
+        temp_files = []
+
         for stream in video["streams"]:
             if stream['codec_type'] == 'subtitle':
                 language = stream['tags']['language']
                 if mapping.get(language) is not None:
-                    print(f"Replacing: language={language} file={mapping.get(stream['tags']['language'])}", file=sys.stderr)
-                    args.extend(["-i", mapping.get(stream['tags']['language'])])
+                    file = mapping.get(language)
+                    print(f"Replacing: language={language} file={file}", file=sys.stderr)
+
+                    if not self.no_checks:
+                        self.verifySubtitleFile(file)
+
+                    tmp_file = self.normalizeSrtFile(file)
+                    temp_files.append(tmp_file)
+
+                    args.extend(["-i", tmp_file])
                     maps.extend(["-map", str(input_counter) + ":s"])
                     meta.extend([f"-metadata:s:s:{subtitle_counter}", f"language={language}"])
                     del mapping[language]
@@ -579,42 +618,93 @@ class SubtitleEmbedCommand(MainSubCommand):
                 subtitle_counter = subtitle_counter + 1
             else:
                 maps.extend(["-map", "0:" + str(stream['index'])])
+
         for language, file in mapping.items():
             if file is None:
                 print(f"Warning: subtitle file not found: language={language}", file=sys.stderr)
             else:
                 print(f"Adding: language={language} file={file}", file=sys.stderr)
-                args.extend(["-i", file])
+
+                if not self.no_checks:
+                    self.verifySubtitleFile(file)
+
+                tmp_file = self.normalizeSrtFile(file)
+                temp_files.append(tmp_file)
+
+                args.extend(["-i", tmp_file])
                 maps.extend(["-map", str(input_counter) + ":s"])
                 meta.extend([f"-metadata:s:s:{subtitle_counter}", f"language={language}"])
                 input_counter = input_counter + 1
                 subtitle_counter = subtitle_counter + 1
+
         args.extend(maps)
         args.extend(["-c", "copy"])
+
         if Path(self.main.video_output).suffix == ".mp4":
             args.extend(["-c:s", "mov_text"])
         elif Path(self.main.video_output).suffix == ".mkv":
             args.extend(["-c:s", "srt"])
+
         args.extend(["-map_metadata", "0", "-movflags", "use_metadata_tags"])
         args.extend(meta)
         args.append('--')
         args.append(self.main.video_output)
 
-        safe = True
         try:
             print(f"Executing ffmpeg: {format_shell(args)}", file=sys.stderr)
             exit: int = subprocess.run(args).returncode
             if exit != 0:
                 print(f"process exited with error: exit={exit} : {format_shell(args)}", file=sys.stderr)
-            #safe = False
-            #shutil.copyfile(tmp, self.main.video_input)
-            #safe = True
         finally:
-            if safe:
-                #silent_unlink(tmp)
-                pass
+            # cleanup temp files
+            for f in temp_files:
+                silent_unlink(f)
 
         return exit
+
+
+class SubtitleExtractCommand(MainSubCommand):
+    priorities: list[str] | None = list()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+    def setup(self, args) -> int | None:
+        parser = argparse.ArgumentParser(prog=args[0], description="Extract subtitles")
+        parser.add_argument("--prio", type=comma_separated_string, dest="priorities", action='extend')
+
+        parser.parse_args(args[1:], namespace=self)
+
+        if self.main.video_input is None:
+            print("--vi video_input must be specified", file=sys.stderr)
+            return 122
+
+        return None
+
+    def execute(self) -> int:
+        prefix = Path(self.main.video_input).stem + "."
+        video = self.main.readVideoData()
+
+        for stream in video["streams"]:
+            if stream["codec_type"] != "subtitle":
+                continue
+
+            lang = stream.get("tags", {}).get("language", "und")
+            out_file = f"{prefix}{lang}.srt"
+
+            print(f"Extracting: language={lang} stream={stream['index']} -> {out_file}")
+
+            args = self.main.createFfmpegCommand()
+            args.extend([
+                "-i", self.main.video_input,
+                "-map", f"0:{stream['index']}",
+                "-c:s", "srt",
+                "--", out_file
+            ])
+
+            exit: int = subprocess.run(args).returncode
+
+        return 0
 
 
 class LanguageReorderCommand(MainSubCommand):
@@ -638,7 +728,8 @@ class LanguageReorderCommand(MainSubCommand):
     def execute(self) -> int:
         video = self.main.readVideoData()
 
-        args = ["ffmpeg", "-hide_banner", "-loglevel", "info", "-i", self.main.video_input, ]
+        args = self.main.createFfmpegCommand()
+        args.extend(["-i", self.main.video_input ])
 
         maps = []
         meta = []
@@ -1057,6 +1148,7 @@ class Main(Command):
     command: Command | None = None
     video_input: str | None = None
     video_output: str | None = None
+    yes: bool = False
     subcommand: list[str] = []
 
     @override
@@ -1064,6 +1156,7 @@ class Main(Command):
         parser = argparse.ArgumentParser(prog=args[0], description="Subtitles operations")
         parser.add_argument("--vi", "--video-input", type=str, dest="video_input")
         parser.add_argument("--vo", "--video-output", type=str, dest="video_output")
+        parser.add_argument("-y", action="store_true", dest="yes")
         parser.add_argument("subcommand", type=str, nargs=argparse.REMAINDER)
 
         parser.parse_args(args[1:], namespace=self)
@@ -1074,6 +1167,8 @@ class Main(Command):
 
         if self.subcommand[0] == 'subtitle-embed':
             self.command = SubtitleEmbedCommand(self)
+        elif self.subcommand[0] == 'subtitle-extract':
+                self.command = SubtitleExtractCommand(self)
         elif self.subcommand[0] == 'subtitle-convert':
             self.command = SubtitleConvertCommand(self)
         elif self.subcommand[0] == 'convert':
@@ -1092,6 +1187,13 @@ class Main(Command):
 
         self.subcommand[0] = args[0] + " " + self.subcommand[0]
         return self.command.run(self.subcommand)
+
+    def createFfmpegCommand(self) -> list[str]:
+        command = [ "ffmpeg", "-hide_banner", "-loglevel", "info" ]
+        if self.yes:
+            command.extend([ "-y" ])
+
+        return command
 
     def readVideoData(self) -> dict[str, object]:
         cmd = ["ffprobe", "-hide_banner", "-loglevel", "fatal", "-show_error", "-show_format", "-show_streams", "-show_programs", "-show_chapters", "-show_private_data", "-print_format", "json", "--", self.video_input]
