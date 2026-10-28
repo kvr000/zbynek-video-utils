@@ -933,7 +933,7 @@ class ConcatCommand(MainSubCommand):
         listfile = tempfile.NamedTemporaryFile("w", delete_on_close=False)
         try:
             for input in self.inputs:
-                print("file " + os.path.abspath(input), file = listfile)
+                print("file " + Path(input).resolve().as_posix(), file = listfile)
             listfile.close()
             #subprocess.run(["cat", listfile.name]).returncode
 
